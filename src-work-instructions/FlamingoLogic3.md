@@ -1,0 +1,3 @@
+## Flamingo Logic 3
+
+Flamingo Logic is a technology-driven consulting firm specialising in digital transformation for compliance-heavy sectors such as disability, healthcare, and finance. We integrate ERP, AI, and automation to streamline operations and boost governance. With deep industry insight and innovative solutions, we help businesses navigate complex regulations, reduce manual tasks, and improve service delivery. Our commitment to practical outcomes and scalable systems makes us a trusted partner for organisations seeking to thrive in an evolving tech landscape. Whether it’s workforce management, data integrity, or customer engagement, Flamingo Logic delivers clarity, capability, and compliance.
