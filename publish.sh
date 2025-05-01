@@ -5,40 +5,16 @@
 # A FIREWALL AND ONLY EXPOSED TO TRUSTED RESOURCES.                          #
 ################################################################################
 
-## This script assumes Debian 12 or Ubuntu 24.04
-## This would normally be deployed in a NixOS environment; however, creating a generic script is more accessible to most Linux users
-## This script has two parts:
-##   - Top part helps configure a server ("init")
-##   - Bottom part is the script that runs every time you publish ("rebuild")
-## This script configures nginx and mdbook with IP. You will need to update with URL if needed (see theme/head.hbs)
-
-## TODO:
-# - run https://github.com/chuboe/chuboe-system-configurator
-# - ensure running from user with sudo privileges
-# - add https cert in nginx
-# - update the below variables labeled with ###change-me###
-
-#### More Repository Notes ####
-# The script assumes there are multiple repositories (or at least accounts for this scenario)
-# Each repository:
-#   - is a book or collection of knowledge (has src directory)
-#   - has its own book.toml
-#   - can have multiple aichat airole files/ttyd (csr, mgr, etc...)
-#   - note: we can put [FlamingoLogic] variables in the book.toml without conflict
-#### end More Repository Notes ####
-
 function graceful_exit {
   echo -e "Exiting due to an error occurring at $(TZ=US/Eastern date '+%m/%d/%Y %H:%M:%S EST.')\n"
-  echo -e "Some results before the error may have been logged to $LOG_FILE\n"
   echo -e "Here is the error message: $1\n"
   exit 1
 }
 
-# Validations
 echo "Running sudo validation check..."
 sudo ls &>/dev/null || graceful_exit "Current user does not have sudo abilities"
 
-#### Variables used by all parts of script ####
+#### Variables ####
 declare -A SC_VARIABLES
 SC_SCRIPT_DIR_NAME=$(readlink -f "$0")
 SC_SCRIPT_DIR=$(dirname "$SC_SCRIPT_DIR_NAME")
@@ -65,28 +41,13 @@ WS_SERVICE_NAME_TTYD=ttyd-$WS_SERVICE_NAME
 TTYD_PORT=7681
 MY_IP=$(hostname -I | awk '{print $1}')
 
-# Output property variables
 echo
 echo "Property Variables Set:"
 for key in "${!SC_VARIABLES[@]}"; do
   echo "$key=\"${SC_VARIABLES[$key]}\""
 done
 
-#### Uncomment the below to reset during testing ####
-# sudo systemctl disable $WS_SERVICE_NAME.service
-# sudo systemctl stop $WS_SERVICE_NAME.service
-# sudo rm -rf /etc/systemd/system/$WS_SERVICE_NAME.service
-# sudo systemctl daemon-reload
-# sudo rm -rf /var/www/$WS_SERVICE_NAME
-# sudo rm -f /etc/nginx/sites-available/$WS_SERVICE_NAME
-# sudo rm /etc/nginx/sites-enabled/$WS_SERVICE_NAME
-# sudo rm -rf /opt/work-instruction/
-# sudo deluser cathy; sudo rm -rf /home/cathy/
-# sudo rm -rf /tmp/ttyd/
-# sudo rm /etc/cron.d/cron*
-# git reset --hard; git pull
-
-#### PART ONE: INIT CONFIGURATION ####
+#### INIT ####
 if [[ $1 == "init" ]]; then
 
   echo "Configuring system locale..."
@@ -102,6 +63,7 @@ if [[ $1 == "init" ]]; then
   echo "Cloning repository..."
   sudo mkdir -p $WI_ROOT_DIR/$GH_PROJECT/
   sudo git clone $WI_URL $WI_REPO_DIR
+  sudo chown -R $CHAT_USER:$CHAT_USER $WI_REPO_DIR
   for key in "${!SC_VARIABLES[@]}"; do
     echo "$key=\"${SC_VARIABLES[$key]}\"" | sudo tee -a $WI_REPO_DIR/config.properties
   done
@@ -143,16 +105,8 @@ if [[ $1 == "init" ]]; then
   sudo systemctl start $WS_SERVICE_NAME.service
 
   echo "Generating self-signed certificate..."
-  country="AU"
-  state="SA"
-  locality="Adelaide"
-  organization="flamingo-logic"
-  organizationalunit="training"
-  commonname="flamingo"
-  email="admin@flamingologic.com"
-
   sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -subj "/C=$country/ST=$state/L=$locality/O=$organization/OU=$organizationalunit/CN=$commonname/emailAddress=$email" \
+    -subj "/C=AU/ST=SA/L=Adelaide/O=flamingo-logic/OU=training/CN=flamingo/emailAddress=admin@flamingologic.com" \
     -keyout /etc/ssl/private/nginx-selfsigned.key \
     -out /etc/ssl/certs/nginx-selfsigned.crt
 
@@ -167,7 +121,7 @@ if [[ $1 == "init" ]]; then
   sudo sed -i "s|TTYD_PORT|$TTYD_PORT|g" $WI_REPO_DIR/util/nginx-config
   sudo cp $WI_REPO_DIR/util/nginx-config $WI_REPO_DIR/util/$WS_SERVICE_NAME
   sudo mv $WI_REPO_DIR/util/$WS_SERVICE_NAME /etc/nginx/sites-available/$WS_SERVICE_NAME
-  sudo ln -s /etc/nginx/sites-available/$WS_SERVICE_NAME /etc/nginx/sites-enabled/
+  sudo ln -sf /etc/nginx/sites-available/$WS_SERVICE_NAME /etc/nginx/sites-enabled/
   sudo rm -f /etc/nginx/sites-enabled/default
   sudo systemctl restart nginx
 
@@ -178,11 +132,54 @@ if [[ $1 == "init" ]]; then
   sudo sed -i "s|WS_SERVICE_NAME_TTYD|$WS_SERVICE_NAME_TTYD|g" $WI_REPO_DIR/theme/head.hbs
 
   echo "Publishing first version..."
-  PUBLISH_DATE=`date +%Y%m%d`-`date +%H%M%S`
-  cd $WI_REPO_DIR/
-  sudo $WI_REPO_DIR/util/summary.sh
-  sudo /usr/local/bin/mdbook build
-  sudo rsync -a --delete wi/ /var/www/$WS_SERVICE_NAME/
+  cd $WI_REPO_DIR || graceful_exit "Failed to enter repo directory."
+
+  echo "📝 Generating SUMMARY.md"
+  sudo bash -c "echo '# Summary' > '$WI_SRC_DIR/SUMMARY.md'"
+  for file in "$WI_SRC_DIR"/*.md; do
+    filename=$(basename "$file")
+    [[ "$filename" == "SUMMARY.md" ]] && continue
+    title=$(echo "$filename" | sed 's/-/ /g; s/.md$//; s/\b\(.\)/\u\1/g')
+    sudo bash -c "echo '- [$title]($filename)' >> '$WI_SRC_DIR/SUMMARY.md'"
+  done
+  sudo chown $CHAT_USER:$CHAT_USER "$WI_SRC_DIR/SUMMARY.md"
+
+  echo "🔧 Ensuring output directory is writable..."
+  sudo mkdir -p "$WI_REPO_DIR/book"
+  sudo chown -R $CHAT_USER:$CHAT_USER "$WI_REPO_DIR"
+  
+  sudo -u $CHAT_USER /usr/local/bin/mdbook build || graceful_exit "mdbook build failed"
+  sudo rsync -a --delete book/ /var/www/$WS_SERVICE_NAME/
   sudo chown -R www-data:www-data /var/www/$WS_SERVICE_NAME/
-  sudo rm -rf /var/www/$WS_SERVICE_NAME/.obsidian/
+fi
+
+#### REBUILD ####
+if [[ $1 == "rebuild" ]]; then
+  echo "Rebuilding ChatDoco content..."
+
+  SUMMARY_FILE="$WI_SRC_DIR/SUMMARY.md"
+
+  echo "📝 Generating SUMMARY.md at: $SUMMARY_FILE"
+  sudo bash -c "echo '# Summary' > '$SUMMARY_FILE'"
+  for file in "$WI_SRC_DIR"/*.md; do
+    filename=$(basename "$file")
+    [[ "$filename" == "SUMMARY.md" ]] && continue
+    title=$(echo "$filename" | sed 's/-/ /g; s/.md$//; s/\b\(.\)/\u\1/g')
+    sudo bash -c "echo '- [$title]($filename)' >> '$SUMMARY_FILE'"
+  done
+  sudo chown $CHAT_USER:$CHAT_USER "$SUMMARY_FILE"
+
+  echo "🔧 Ensuring output directory is writable..."
+  sudo mkdir -p "$WI_REPO_DIR/book"
+  sudo chown -R $CHAT_USER:$CHAT_USER "$WI_REPO_DIR"
+
+  echo "🏗 Running mdbook build..."
+  cd "$WI_REPO_DIR" || graceful_exit "Failed to enter repo directory."
+  sudo -u $CHAT_USER /usr/local/bin/mdbook build || graceful_exit "mdbook build failed"
+
+  echo "📁 Deploying to NGINX directory..."
+  sudo rsync -a --delete book/ /var/www/$WS_SERVICE_NAME/
+  sudo chown -R www-data:www-data /var/www/$WS_SERVICE_NAME/
+
+  echo "✅ Rebuild and deployment complete."
 fi
